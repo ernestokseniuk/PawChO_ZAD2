@@ -55,9 +55,8 @@ jobs:
             type=semver,pattern={{major}}
             type=sha,format=long
             type=sha,format=short
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push Docker image
+            type=raw,value=latest,enable={{is_default_branch}}      - name: Build and push Docker image
+        id: build
         uses: docker/build-push-action@v4
         with:
           context: .
@@ -67,21 +66,26 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/cache:${{ github.ref_name }}
           cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/cache:${{ github.ref_name }},mode=max
+          outputs: type=docker,dest=image.tar
+          
+      - name: Load image
+        run: |
+          docker load < image.tar
+          docker image ls
 
       # Using Trivy for CVE scanning
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ steps.meta.outputs.tags[0] }}
+          image-ref: $(echo "${{ steps.meta.outputs.tags }}" | tr ' ' '\n' | head -1)
           format: 'sarif'
           output: 'trivy-results.sarif'
           exit-code: 1
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
-          
-      - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v2
+            - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'

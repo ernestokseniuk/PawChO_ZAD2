@@ -48,13 +48,35 @@ Tryb `max` zapewnia przechowywanie wszystkich warstw pośrednich, co maksymalizu
 
 #### c. Test CVE obrazu
 
-Do skanowania obrazu pod kątem zagrożeń wybrano narzędzie Trivy, które jest lekkie i integruje się dobrze z GitHub Actions:
+Do skanowania obrazu pod kątem zagrożeń wybrano narzędzie Trivy, które jest lekkie i integruje się dobrze z GitHub Actions.
 
+W implementacji zastosowano dwuetapowe podejście do budowania i skanowania obrazu:
+
+1. Najpierw obraz jest budowany i zapisywany lokalnie (bez publikacji):
+```yaml
+- name: Build and push Docker image
+  id: build
+  uses: docker/build-push-action@v4
+  with:
+    context: .
+    platforms: linux/amd64,linux/arm64
+    push: false
+    tags: ${{ steps.meta.outputs.tags }}
+    labels: ${{ steps.meta.outputs.labels }}
+    outputs: type=docker,dest=image.tar
+    
+- name: Load image
+  run: |
+    docker load < image.tar
+    docker image ls
+```
+
+2. Następnie lokalny obraz jest skanowany przy użyciu Trivy:
 ```yaml
 - name: Run Trivy vulnerability scanner
   uses: aquasecurity/trivy-action@master
   with:
-    image-ref: ${{ steps.meta.outputs.tags[0] }}
+    image-ref: $(echo "${{ steps.meta.outputs.tags }}" | tr ' ' '\n' | head -1)
     format: 'sarif'
     output: 'trivy-results.sarif'
     exit-code: 1
@@ -64,6 +86,8 @@ Do skanowania obrazu pod kątem zagrożeń wybrano narzędzie Trivy, które jest
 ```
 
 Dzięki ustawieniu `exit-code: 1` dla poziomów `CRITICAL,HIGH`, workflow zakończy się błędem, jeśli zostaną znalezione podatności o wysokim poziomie ryzyka. Obraz zostanie przesłany do GitHub Container Registry tylko wtedy, gdy skan przebiegnie pomyślnie.
+
+**Uwaga:** W przypadku obrazów wieloplatformowych konieczne jest zastosowanie rozwiązania z zapisem obrazu do pliku tar i wczytaniem go do lokalnego demona Dockera przed skanowaniem. Zapewnia to poprawne działanie Trivy, które w przeciwnym przypadku może mieć problem z prawidłowym rozpoznaniem obrazu.
 
 ## Strategia tagowania
 
