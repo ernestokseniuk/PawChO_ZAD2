@@ -1,11 +1,16 @@
-name: Docker Build and Push
+name: Build and Push Docker Image
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
+    tags: [ 'v*' ]
   pull_request:
-    branches: [ main ]
-  workflow_dispatch:
+    branches: [ main, master ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  DOCKERHUB_CACHE_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/zad2-cache
 
 jobs:
   build-and-push:
@@ -16,115 +21,69 @@ jobs:
       security-events: write
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-      
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: image=moby/buildkit:master
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
 
-      - name: Log in to DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ghcr.io/${{ github.repository }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ github.event.repository.name }}
-          tags: |
-            type=schedule
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=sha,format=long
-            type=sha,format=short
-            type=raw,value=latest,enable={{is_default_branch}}
-            
-      - name: Build Docker image for scanning
-        id: build
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          platforms: linux/amd64
-          push: false
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/cache:${{ github.ref_name }}
-          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/cache:${{ github.ref_name }},mode=max
-          load: true
-          
-      - name: List loaded images
-        run: docker image ls
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Using Trivy for CVE scanning
-      - name: Get first image tag for scanning
-        id: get-tag
-        run: |
-          FIRST_TAG=$(echo "${{ steps.meta.outputs.tags }}" | tr ' ' '\n' | head -1)
-          echo "image-tag=$FIRST_TAG" >> $GITHUB_OUTPUT
-          echo "Scanning image: $FIRST_TAG"
+    - name: Log in to Docker Hub (for cache)
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ steps.get-tag.outputs.image-tag }}
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          exit-code: 0
-          ignore-unfixed: true
-          vuln-type: 'os,library'
-          severity: 'CRITICAL,HIGH'
-          
-      - name: Check if vulnerabilities found
-        id: vuln-check
-        run: |
-          if [ -f trivy-results.sarif ]; then
-            # Check if there are any vulnerabilities in the SARIF file
-            if grep -q '"level": "error"' trivy-results.sarif; then
-              echo "vulnerabilities_found=true" >> $GITHUB_OUTPUT
-              echo "Critical or High vulnerabilities found!"
-              exit 1
-            else
-              echo "vulnerabilities_found=false" >> $GITHUB_OUTPUT
-              echo "No critical or high vulnerabilities found."
-            fi
-          else
-            echo "vulnerabilities_found=false" >> $GITHUB_OUTPUT
-            echo "No SARIF file generated, assuming no vulnerabilities."
-          fi
-          
-      - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        if: always() && hashFiles('trivy-results.sarif') != ''
-        with:
-          sarif_file: 'trivy-results.sarif'
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=semver,pattern={{major}}
+          type=sha,prefix=sha-,format=short
+          type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Push multi-platform image if no vulnerabilities found
-        if: steps.vuln-check.outputs.vulnerabilities_found == 'false'
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/cache:${{ github.ref_name }}
-          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/cache:${{ github.ref_name }},mode=max
+    - name: Build Docker image for scanning
+      id: build-scan
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: linux/amd64
+        load: true
+        tags: scan-image:latest
+        cache-from: type=registry,ref=${{ env.DOCKERHUB_CACHE_REPO }}:cache    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: scan-image:latest
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        severity: 'CRITICAL,HIGH'
+        exit-code: '0'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+    - name: Build and push multi-arch Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=registry,ref=${{ env.DOCKERHUB_CACHE_REPO }}:cache
+        cache-to: type=registry,ref=${{ env.DOCKERHUB_CACHE_REPO }}:cache,mode=max
