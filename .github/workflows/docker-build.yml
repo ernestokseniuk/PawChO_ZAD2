@@ -75,10 +75,17 @@ jobs:
         run: docker image ls
 
       # Using Trivy for CVE scanning
+      - name: Get first image tag for scanning
+        id: get-tag
+        run: |
+          FIRST_TAG=$(echo "${{ steps.meta.outputs.tags }}" | tr ' ' '\n' | head -1)
+          echo "image-tag=$FIRST_TAG" >> $GITHUB_OUTPUT
+          echo "Scanning image: $FIRST_TAG"
+
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: $(echo "${{ steps.meta.outputs.tags }}" | tr ' ' '\n' | head -1)
+          image-ref: ${{ steps.get-tag.outputs.image-tag }}
           format: 'sarif'
           output: 'trivy-results.sarif'
           exit-code: 0
