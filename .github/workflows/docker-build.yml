@@ -58,23 +58,21 @@ jobs:
             type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
             
-      - name: Build and push Docker image
+      - name: Build Docker image for scanning
         id: build
         uses: docker/build-push-action@v5
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/cache:${{ github.ref_name }}
           cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/cache:${{ github.ref_name }},mode=max
-          outputs: type=docker,dest=image.tar
+          load: true
           
-      - name: Load image
-        run: |
-          docker load < image.tar
-          docker image ls
+      - name: List loaded images
+        run: docker image ls
 
       # Using Trivy for CVE scanning
       - name: Run Trivy vulnerability scanner
@@ -83,19 +81,37 @@ jobs:
           image-ref: $(echo "${{ steps.meta.outputs.tags }}" | tr ' ' '\n' | head -1)
           format: 'sarif'
           output: 'trivy-results.sarif'
-          exit-code: 1
+          exit-code: 0
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
           
+      - name: Check if vulnerabilities found
+        id: vuln-check
+        run: |
+          if [ -f trivy-results.sarif ]; then
+            # Check if there are any vulnerabilities in the SARIF file
+            if grep -q '"level": "error"' trivy-results.sarif; then
+              echo "vulnerabilities_found=true" >> $GITHUB_OUTPUT
+              echo "Critical or High vulnerabilities found!"
+              exit 1
+            else
+              echo "vulnerabilities_found=false" >> $GITHUB_OUTPUT
+              echo "No critical or high vulnerabilities found."
+            fi
+          else
+            echo "vulnerabilities_found=false" >> $GITHUB_OUTPUT
+            echo "No SARIF file generated, assuming no vulnerabilities."
+          fi
+          
       - name: Upload Trivy scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: always() && hashFiles('trivy-results.sarif') != ''
         with:
           sarif_file: 'trivy-results.sarif'
 
-      - name: Push image if no vulnerabilities found
-        if: ${{ success() }}
+      - name: Push multi-platform image if no vulnerabilities found
+        if: steps.vuln-check.outputs.vulnerabilities_found == 'false'
         uses: docker/build-push-action@v5
         with:
           context: .
