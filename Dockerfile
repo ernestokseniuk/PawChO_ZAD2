@@ -13,7 +13,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o app .
 
 # Use a small Alpine image for the final stage
-FROM alpine:3.17
+FROM alpine:3.19
 
 # Install certificates for HTTPS
 RUN apk --no-cache add ca-certificates
